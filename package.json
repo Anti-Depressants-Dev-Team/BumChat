@@ -37,6 +37,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "clsx": "^2.1.0",
     "kick-live-connector": "^1.0.0",
     "lucide-react": "^0.309.0",
@@ -46,6 +47,7 @@
     "tailwind-merge": "^2.2.0",
     "tmi.js": "^1.8.5",
     "uuid": "^13.0.0",
+    "ws": "^8.19.0",
     "zustand": "^4.5.0"
   },
   "devDependencies": {

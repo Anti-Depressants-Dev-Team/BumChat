@@ -29,6 +29,107 @@ class KickService {
     private ws: WebSocket | null = null;
     private chatroomId: string = '';
     private viewCountInterval: NodeJS.Timeout | null = null;
+    private accessToken: string = '';
+    private broadcasterUserId: number = 0;
+    private currentUsername: string = '';
+
+    setAccessToken(token: string) {
+        this.accessToken = token;
+    }
+
+    // Get user info from Kick using OAuth token
+    async getUserInfo(): Promise<{ user_id: number; name: string; email?: string } | null> {
+        if (!this.accessToken) return null;
+
+        try {
+            const response = await fetch('https://api.kick.com/public/v1/users', {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`,
+                    'Accept': '*/*',
+                }
+            });
+            const data = await response.json();
+            return data.data?.[0] || null;
+        } catch (error) {
+            console.error('Kick: Error getting user info', error);
+            return null;
+        }
+    }
+
+    // Auto-connect using OAuth - gets user info and connects to their channel
+    async connectWithOAuth(accessToken: string): Promise<{ success: boolean; channel?: string }> {
+        this.accessToken = accessToken;
+
+        const userInfo = await this.getUserInfo();
+        if (!userInfo) {
+            console.log('Kick: Could not get user info');
+            return { success: false };
+        }
+
+        // Store user info for sending messages
+        this.broadcasterUserId = userInfo.user_id;
+        this.currentUsername = userInfo.name;
+
+        // The 'name' field is the username/channel name
+        const channelName = userInfo.name.toLowerCase();
+        console.log('Kick: Logged in as', userInfo.name, 'user_id:', userInfo.user_id);
+
+        // Connect to own channel
+        this.connect(channelName);
+        return { success: true, channel: channelName };
+    }
+
+    // Send a message to Kick chat
+    async sendMessage(channel: string, message: string): Promise<boolean> {
+        if (!this.accessToken || !this.broadcasterUserId) {
+            console.error('Kick: Cannot send message - not authenticated');
+            return false;
+        }
+
+        try {
+            const response = await fetch('https://api.kick.com/public/v1/chat', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`,
+                    'Content-Type': 'application/json',
+                    'Accept': '*/*',
+                },
+                body: JSON.stringify({
+                    broadcaster_user_id: this.broadcasterUserId,
+                    content: message,
+                    type: 'user',
+                }),
+            });
+
+            const data = await response.json();
+
+            if (data.data?.is_sent) {
+                console.log('Kick: Message sent successfully');
+
+                // Add our own message to the chat store
+                const chatMsg: ChatMessage = {
+                    id: data.data.message_id || generateId(),
+                    platform: 'kick',
+                    channel: channel,
+                    user: this.currentUsername,
+                    displayName: this.currentUsername,
+                    color: '#53FC18',
+                    content: message,
+                    timestamp: Date.now(),
+                    badges: [],
+                };
+                useChatStore.getState().addMessage(chatMsg);
+
+                return true;
+            } else {
+                console.error('Kick: Failed to send message', data);
+                return false;
+            }
+        } catch (error) {
+            console.error('Kick: Error sending message', error);
+            return false;
+        }
+    }
 
     async connect(username: string) {
         // Use Electron IPC to bypass CORS and get chatroom ID

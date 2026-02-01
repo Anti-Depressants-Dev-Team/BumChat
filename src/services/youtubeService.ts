@@ -34,6 +34,169 @@ class YouTubeService {
     private viewCountInterval: NodeJS.Timeout | null = null;
     private nextPageToken: string = '';
     private videoId: string = '';
+    private accessToken: string = '';
+
+    setAccessToken(token: string) {
+        this.accessToken = token;
+    }
+
+    // Auto-detect user's active live broadcast using OAuth token
+    async findMyLiveBroadcast(): Promise<{ videoId: string; title: string } | null> {
+        if (!this.accessToken) {
+            console.log('YouTube: No access token for auto-detection');
+            return null;
+        }
+
+        try {
+            // Search for user's active live broadcasts
+            const response = await fetch(
+                `https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,status&broadcastStatus=active&broadcastType=all`,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`,
+                    }
+                }
+            );
+
+            const data = await response.json();
+
+            if (data.items && data.items.length > 0) {
+                const broadcast = data.items[0];
+                return {
+                    videoId: broadcast.id,
+                    title: broadcast.snippet?.title || 'Live Stream'
+                };
+            }
+
+            return null;
+        } catch (error) {
+            console.error('YouTube: Error finding live broadcast', error);
+            return null;
+        }
+    }
+
+    // Connect using OAuth token only (auto-detects live stream)
+    async connectWithOAuth(accessToken: string): Promise<boolean> {
+        this.accessToken = accessToken;
+
+        const broadcast = await this.findMyLiveBroadcast();
+        if (!broadcast) {
+            console.log('YouTube: No active live broadcast found');
+            return false;
+        }
+
+        console.log('YouTube: Found active broadcast:', broadcast.title);
+
+        try {
+            // Get liveChatId using OAuth
+            const videoResponse = await fetch(
+                `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${broadcast.videoId}`,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`,
+                    }
+                }
+            );
+            const videoData = await videoResponse.json();
+
+            const liveChatId = videoData.items?.[0]?.liveStreamingDetails?.activeLiveChatId;
+            if (!liveChatId) {
+                console.error('YouTube: No active live chat found');
+                return false;
+            }
+
+            this.liveChatId = liveChatId;
+            this.videoId = broadcast.videoId;
+            console.log('YouTube: Connected to live chat', liveChatId);
+            useConnectionStore.getState().setYoutubeConnected(true, broadcast.videoId);
+
+            this.startPollingWithOAuth();
+            this.startViewCountPollingWithOAuth();
+            return true;
+        } catch (error) {
+            console.error('YouTube: OAuth connection error', error);
+            return false;
+        }
+    }
+
+    private async fetchMessagesWithOAuth() {
+        if (!this.liveChatId || !this.accessToken) return;
+
+        try {
+            let url = `https://www.googleapis.com/youtube/v3/liveChat/messages?liveChatId=${this.liveChatId}&part=snippet,authorDetails`;
+            if (this.nextPageToken) {
+                url += `&pageToken=${this.nextPageToken}`;
+            }
+
+            const response = await fetch(url, {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`,
+                }
+            });
+            const data: LiveChatResponse = await response.json();
+
+            if (data.items) {
+                const addMessage = useChatStore.getState().addMessage;
+                for (const item of data.items) {
+                    const message: ChatMessage = {
+                        id: generateId(),
+                        platform: 'youtube',
+                        channel: this.videoId,
+                        user: item.authorDetails.channelId,
+                        displayName: item.authorDetails.displayName,
+                        content: item.snippet.displayMessage,
+                        timestamp: new Date(item.snippet.publishedAt).getTime(),
+                        badges: [],
+                        emotes: {},
+                        color: '#FF0000',
+                    };
+                    addMessage(message);
+                }
+            }
+
+            if (data.nextPageToken) {
+                this.nextPageToken = data.nextPageToken;
+            }
+
+            const pollInterval = data.pollingIntervalMillis || 5000;
+            this.pollingInterval = setTimeout(() => this.fetchMessagesWithOAuth(), pollInterval);
+        } catch (error) {
+            console.error('YouTube: Error fetching messages', error);
+            this.pollingInterval = setTimeout(() => this.fetchMessagesWithOAuth(), 10000);
+        }
+    }
+
+    private startPollingWithOAuth() {
+        this.fetchMessagesWithOAuth();
+    }
+
+    private async fetchViewCountWithOAuth() {
+        if (!this.videoId || !this.accessToken) return;
+
+        try {
+            const response = await fetch(
+                `https://www.googleapis.com/youtube/v3/videos?part=liveStreamingDetails&id=${this.videoId}`,
+                {
+                    headers: {
+                        'Authorization': `Bearer ${this.accessToken}`,
+                    }
+                }
+            );
+            const data = await response.json();
+
+            if (data.items?.[0]?.liveStreamingDetails?.concurrentViewers) {
+                const count = parseInt(data.items[0].liveStreamingDetails.concurrentViewers);
+                useViewCountStore.getState().setYoutubeViewCount(this.videoId, count);
+            }
+        } catch (error) {
+            console.error('YouTube: View count fetch error', error);
+        }
+    }
+
+    private startViewCountPollingWithOAuth() {
+        this.fetchViewCountWithOAuth();
+        this.viewCountInterval = setInterval(() => this.fetchViewCountWithOAuth(), 30000);
+    }
 
     async connect(videoId: string, apiKey: string) {
         this.apiKey = apiKey;
@@ -152,13 +315,7 @@ class YouTubeService {
         this.pollingInterval = setTimeout(() => this.fetchMessages(), delay);
     }
 
-    private accessToken: string = '';
-
-    // ... existing connection logic ...
-
-    setAccessToken(token: string) {
-        this.accessToken = token;
-    }
+    // sendMessage moved here, accessToken is already declared at class top
 
     async sendMessage(message: string) {
         if (!this.liveChatId || !this.accessToken) {

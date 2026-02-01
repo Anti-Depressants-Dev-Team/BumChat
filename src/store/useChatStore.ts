@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist, createJSONStorage } from 'zustand/middleware';
 
 export type Platform = 'twitch' | 'youtube' | 'kick';
 
@@ -21,15 +22,38 @@ interface ChatState {
     clearMessages: () => void;
 }
 
-export const useChatStore = create<ChatState>((set) => ({
-    messages: [],
-    addMessage: (message) => set((state) => {
-        // Keep only last 500 messages to prevent memory issues for now
-        const newMessages = [...state.messages, message];
-        if (newMessages.length > 500) {
-            newMessages.shift();
+// Keep last 200 messages in memory, persist last 100 to localStorage
+const MAX_MESSAGES_MEMORY = 500;
+const MAX_MESSAGES_PERSIST = 100;
+
+export const useChatStore = create<ChatState>()(
+    persist(
+        (set) => ({
+            messages: [],
+            addMessage: (message) => set((state) => {
+                // Keep only last MAX_MESSAGES_MEMORY messages to prevent memory issues
+                const newMessages = [...state.messages, message];
+                if (newMessages.length > MAX_MESSAGES_MEMORY) {
+                    newMessages.shift();
+                }
+
+                // Broadcast to widget server
+                window.electronAPI.broadcastWidgetMessage(message);
+
+                return { messages: newMessages };
+            }),
+            clearMessages: () => {
+                window.electronAPI.clearWidgetMessages();
+                set({ messages: [] });
+            },
+        }),
+        {
+            name: 'depressedchat-messages',
+            storage: createJSONStorage(() => localStorage),
+            // Only persist last N messages to avoid large localStorage
+            partialize: (state) => ({
+                messages: state.messages.slice(-MAX_MESSAGES_PERSIST),
+            }),
         }
-        return { messages: newMessages };
-    }),
-    clearMessages: () => set({ messages: [] }),
-}));
+    )
+);

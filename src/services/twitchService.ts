@@ -9,7 +9,72 @@ class TwitchService {
     private client: tmi.Client | null = null;
     private connectedChannels: Set<string> = new Set();
     private username: string = '';
+    private accessToken: string = '';
+    private clientId: string = 'r7089h8tpxdol1s6q1hjmnvn5h8qb0';
 
+    setAccessToken(token: string) {
+        this.accessToken = token;
+    }
+
+    // Get user info from Twitch using OAuth token
+    async getUserInfo(): Promise<{ id: string; login: string; display_name: string } | null> {
+        if (!this.accessToken) return null;
+
+        try {
+            const response = await fetch('https://api.twitch.tv/helix/users', {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`,
+                    'Client-Id': this.clientId,
+                }
+            });
+            const data = await response.json();
+            return data.data?.[0] || null;
+        } catch (error) {
+            console.error('Twitch: Error getting user info', error);
+            return null;
+        }
+    }
+
+    // Check if user is currently streaming
+    async isUserLive(userId: string): Promise<{ isLive: boolean; title?: string }> {
+        if (!this.accessToken) return { isLive: false };
+
+        try {
+            const response = await fetch(`https://api.twitch.tv/helix/streams?user_id=${userId}`, {
+                headers: {
+                    'Authorization': `Bearer ${this.accessToken}`,
+                    'Client-Id': this.clientId,
+                }
+            });
+            const data = await response.json();
+
+            if (data.data && data.data.length > 0) {
+                return { isLive: true, title: data.data[0].title };
+            }
+            return { isLive: false };
+        } catch (error) {
+            console.error('Twitch: Error checking live status', error);
+            return { isLive: false };
+        }
+    }
+
+    // Auto-connect using OAuth - gets user info and connects to their channel
+    async connectWithOAuth(accessToken: string): Promise<{ success: boolean; channel?: string }> {
+        this.accessToken = accessToken;
+
+        const userInfo = await this.getUserInfo();
+        if (!userInfo) {
+            console.log('Twitch: Could not get user info');
+            return { success: false };
+        }
+
+        this.username = userInfo.login;
+        console.log('Twitch: Logged in as', userInfo.display_name);
+
+        // Connect to own channel (works whether streaming or not)
+        this.connect([userInfo.login], userInfo.login, accessToken);
+        return { success: true, channel: userInfo.login };
+    }
     connect(channels: string[], username?: string, token?: string) {
         if (this.client) {
             this.disconnect();
