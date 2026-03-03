@@ -1,14 +1,14 @@
 import { useViewCountStore } from '../store/useViewCountStore';
 import { useConnectionStore } from '../store/useConnectionStore';
-import { Twitch, Youtube, Play, Eye } from 'lucide-react';
+import { Twitch, Play, Eye } from 'lucide-react';
 
 export function ViewCounters() {
     const twitchCounts = useViewCountStore((s) => s.twitch);
-    const youtubeCounts = useViewCountStore((s) => s.youtube);
+
     const kickCounts = useViewCountStore((s) => s.kick);
 
     const twitch = useConnectionStore((s) => s.twitch);
-    const youtube = useConnectionStore((s) => s.youtube);
+
     const kick = useConnectionStore((s) => s.kick);
 
     const formatCount = (count: number) => {
@@ -17,7 +17,7 @@ export function ViewCounters() {
         return count.toString();
     };
 
-    const hasAnyConnection = twitch.connected || youtube.connected || kick.connected;
+    const hasAnyConnection = twitch.connected || kick.connected;
 
     if (!hasAnyConnection) return null;
 
@@ -34,16 +34,6 @@ export function ViewCounters() {
                     </span>
                 </div>
             ))}
-
-            {youtube.connected && youtube.videoId && (
-                <div className="flex items-center gap-1.5 text-xs">
-                    <Youtube size={12} className="text-[#FF0000]" />
-                    <span className="text-gray-400">Live:</span>
-                    <span className="text-white font-medium">
-                        {youtubeCounts[youtube.videoId] !== undefined ? formatCount(youtubeCounts[youtube.videoId]) : '...'}
-                    </span>
-                </div>
-            )}
 
             {kick.connected && kick.channel && (
                 <div className="flex items-center gap-1.5 text-xs">

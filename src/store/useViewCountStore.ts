@@ -2,31 +2,38 @@ import { create } from 'zustand';
 
 interface ViewCounts {
     twitch: { [channel: string]: number };
-    youtube: { [videoId: string]: number };
+
     kick: { [channel: string]: number };
 
     setTwitchViewCount: (channel: string, count: number) => void;
-    setYoutubeViewCount: (videoId: string, count: number) => void;
+
     setKickViewCount: (channel: string, count: number) => void;
 }
 
 export const useViewCountStore = create<ViewCounts>((set) => ({
     twitch: {},
-    youtube: {},
+
     kick: {},
 
-    setTwitchViewCount: (channel, count) =>
-        set((state) => ({
-            twitch: { ...state.twitch, [channel]: count },
-        })),
+    setTwitchViewCount: (channel, count) => {
+        set((state) => {
+            const newState = { twitch: { ...state.twitch, [channel]: count } };
+            if (window.electronAPI?.broadcastViewerCount) {
+                // Broadcast the entirely new combined state
+                window.electronAPI.broadcastViewerCount({ twitch: newState.twitch, kick: state.kick });
+            }
+            return newState;
+        });
+    },
 
-    setYoutubeViewCount: (videoId, count) =>
-        set((state) => ({
-            youtube: { ...state.youtube, [videoId]: count },
-        })),
-
-    setKickViewCount: (channel, count) =>
-        set((state) => ({
-            kick: { ...state.kick, [channel]: count },
-        })),
+    setKickViewCount: (channel, count) => {
+        set((state) => {
+            const newState = { kick: { ...state.kick, [channel]: count } };
+            if (window.electronAPI?.broadcastViewerCount) {
+                // Broadcast the entirely new combined state
+                window.electronAPI.broadcastViewerCount({ twitch: state.twitch, kick: newState.kick });
+            }
+            return newState;
+        });
+    }
 }));

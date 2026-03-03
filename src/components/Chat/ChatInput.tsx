@@ -1,28 +1,30 @@
 import { useState, KeyboardEvent } from 'react';
-import { Send, Twitch, Youtube, ChevronDown } from 'lucide-react';
+import { Send, Twitch, Play, ChevronDown } from 'lucide-react';
 import { twitchService } from '../../services/twitchService';
-import { youtubeService } from '../../services/youtubeService';
+import { kickService } from '../../services/kickService';
 import { useConnectionStore } from '../../store/useConnectionStore';
+import { useSettingsStore } from '../../store/useSettingsStore';
 
-type Platform = 'all' | 'twitch' | 'youtube' | 'kick';
+type Platform = 'all' | 'twitch' | 'kick';
 
 export function ChatInput() {
     const [message, setMessage] = useState('');
     const [selectedPlatform, setSelectedPlatform] = useState<Platform>('all');
     const [isMenuOpen, setIsMenuOpen] = useState(false);
 
-    const { twitch, youtube, kick } = useConnectionStore();
+    const { twitch, kick } = useConnectionStore();
+    const kickToken = useSettingsStore((s) => s.kickToken);
 
     // Derived state
     const isTwitchConnected = twitch.connected;
-    const isYoutubeConnected = youtube.connected;
+
     const isKickConnected = kick.connected;
     const twitchChannels = twitch.channels;
 
     const handleSend = async () => {
         if (!message.trim()) return;
 
-        const promises = [];
+        const promises: Promise<any>[] = [];
 
         // Twitch
         if ((selectedPlatform === 'all' || selectedPlatform === 'twitch') && isTwitchConnected && twitchChannels.length > 0) {
@@ -32,15 +34,9 @@ export function ChatInput() {
             });
         }
 
-        // YouTube
-        if ((selectedPlatform === 'all' || selectedPlatform === 'youtube') && isYoutubeConnected) {
-            promises.push(youtubeService.sendMessage(message));
-        }
-
-        // Kick (Read-only for now)
-        if (selectedPlatform === 'kick' && isKickConnected) {
-            console.log('Kick posting not supported via API yet');
-            // Check if user tried to send specifically to Kick
+        // Kick
+        if ((selectedPlatform === 'all' || selectedPlatform === 'kick') && isKickConnected && kickToken) {
+            promises.push(kickService.sendMessage(message, kickToken));
         }
 
         await Promise.all(promises);
@@ -57,8 +53,8 @@ export function ChatInput() {
     // Calculate which platforms are available
     const availablePlatforms: { id: Platform; icon: any; color: string }[] = [];
     if (isTwitchConnected) availablePlatforms.push({ id: 'twitch', icon: Twitch, color: 'text-[#6441a5]' });
-    if (isYoutubeConnected) availablePlatforms.push({ id: 'youtube', icon: Youtube, color: 'text-[#FF0000]' });
-    // if (isKickConnected) availablePlatforms.push({ id: 'kick', icon: Play, color: 'text-[#53FC18]' }); // Kick is read-only
+
+    if (isKickConnected) availablePlatforms.push({ id: 'kick', icon: Play, color: 'text-[#53FC18]' });
 
     if (availablePlatforms.length > 0) {
         availablePlatforms.unshift({ id: 'all', icon: Send, color: 'text-white' });

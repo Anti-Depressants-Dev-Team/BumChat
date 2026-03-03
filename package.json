@@ -1,26 +1,25 @@
 {
-  "name": "depressed-chat",
-  "productName": "DepressedChat",
+  "name": "bumpchat",
+  "productName": "BumpChat",
   "version": "1.0.0",
   "description": "A unified streaming chat application.",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build && electron-builder",
+    "build": "tsc && tsc -p electron/tsconfig.json && vite build && electron-builder",
     "preview": "vite preview",
     "electron:dev": "concurrently -k \"vite\" \"wait-on tcp:5173 && tsc -p electron/tsconfig.json -w\" \"wait-on tcp:5173 && nodemon --watch dist-electron --exec electron . --dev\"",
-    "electron:build": "tsc && vite build && electron-builder"
+    "electron:build": "tsc && tsc -p electron/tsconfig.json && vite build && electron-builder"
   },
   "build": {
-    "appId": "com.depressed-chat.app",
-    "productName": "DepressedChat",
+    "appId": "com.bumpchat.app",
+    "productName": "BumpChat",
     "files": [
-      "dist",
-      "dist-electron",
-      "package.json"
+      "dist/**/*",
+      "dist-electron/**/*"
     ],
     "directories": {
-      "output": "dist"
+      "output": "release"
     },
     "win": {
       "target": "nsis",
@@ -38,10 +37,12 @@
   "license": "ISC",
   "dependencies": {
     "clsx": "^2.1.0",
+    "express": "^5.2.1",
     "kick-live-connector": "^1.0.0",
     "lucide-react": "^0.309.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "socket.io": "^4.8.3",
     "socket.io-client": "^4.7.4",
     "tailwind-merge": "^2.2.0",
     "tmi.js": "^1.8.5",
@@ -49,6 +50,7 @@
     "zustand": "^4.5.0"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^20.11.5",
     "@types/react": "^18.2.48",
     "@types/react-dom": "^18.2.18",

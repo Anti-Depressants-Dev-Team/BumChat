@@ -1,15 +1,14 @@
 import { useConnectionStore } from '../store/useConnectionStore';
-import { Twitch, Youtube, Play, Wifi, WifiOff } from 'lucide-react';
+import { Twitch, Play, Wifi, WifiOff } from 'lucide-react';
 import { cn } from '../lib/utils';
 
 export function ConnectionStatus() {
     const twitch = useConnectionStore((state) => state.twitch);
-    const youtube = useConnectionStore((state) => state.youtube);
+
     const kick = useConnectionStore((state) => state.kick);
 
     const platforms = [
         { name: 'Twitch', connected: twitch.connected, icon: Twitch, color: '#6441a5', channels: twitch.channels },
-        { name: 'YouTube', connected: youtube.connected, icon: Youtube, color: '#FF0000', channels: youtube.videoId ? [youtube.videoId] : [] },
         { name: 'Kick', connected: kick.connected, icon: Play, color: '#53FC18', channels: kick.channel ? [kick.channel] : [] },
     ];
 

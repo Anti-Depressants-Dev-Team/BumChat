@@ -1,6 +1,8 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, shell, ipcMain, net, globalShortcut } from 'electron';
 import path from 'path';
 import fs from 'fs';
+import http from 'http';
+import { startWidgetServer } from './widgetServer';
 
 // Handle creating/removing shortcuts on Windows when installing/uninstalling.
 // if (require('electron-squirrel-startup')) {
@@ -10,6 +12,7 @@ import fs from 'fs';
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
+let widgetBroadcaster: { broadcastMessage: (message: any) => void; broadcastViewerCount: (counts: any) => void } | null = null;
 
 // Detect dev mode using explicit flag
 const isDev = process.argv.includes('--dev');
@@ -50,7 +53,7 @@ if (!requestSingleInstanceLock) {
         const icon = nativeImage.createFromPath(iconPath);
         tray = new Tray(icon.resize({ width: 16, height: 16 }));
 
-        tray.setToolTip('DepressedChat');
+        tray.setToolTip('BumpChat');
 
         // Double-click to show window
         tray.on('double-click', () => {
@@ -70,7 +73,7 @@ if (!requestSingleInstanceLock) {
 
         const contextMenu = Menu.buildFromTemplate([
             {
-                label: 'Show DepressedChat',
+                label: 'Show BumpChat',
                 click: () => {
                     mainWindow?.show();
                     mainWindow?.focus();
@@ -115,6 +118,7 @@ if (!requestSingleInstanceLock) {
                 preload: path.join(__dirname, 'preload.js'),
                 nodeIntegration: false,
                 contextIsolation: true,
+                webviewTag: true,
             },
             show: false,
             autoHideMenuBar: true,
@@ -153,6 +157,13 @@ if (!requestSingleInstanceLock) {
     };
 
     app.on('ready', () => {
+        // Start Local OBS Widget Server
+        try {
+            widgetBroadcaster = startWidgetServer();
+        } catch (e) {
+            console.error('Failed to start widget server on port 8356', e);
+        }
+
         createWindow();
         createTray();
 
@@ -165,24 +176,61 @@ if (!requestSingleInstanceLock) {
 
         // IPC Handlers for API requests (Bypassing CORS)
 
-        // Kick Channel Info (for chatroom_id)
-        ipcMain.handle('get-kick-channel', async (event, slug) => {
+        // Kick Channel Info (using hidden BrowserWindow to bypass Cloudflare)
+        ipcMain.handle('get-kick-channel', async (_event, slug: string, _token?: string) => {
             try {
-                const response = await fetch(`https://kick.com/api/v2/channels/${slug}`, {
-                    headers: { 'Accept': 'application/json' }
+                console.log('Kick: Fetching channel data for', slug, 'via hidden browser...');
+                const hiddenWin = new BrowserWindow({
+                    show: false,
+                    width: 800,
+                    height: 600,
+                    webPreferences: { nodeIntegration: false, contextIsolation: true },
                 });
-                if (!response.ok) throw new Error('Failed to fetch kick channel');
-                return await response.json();
+
+                const apiUrl = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`;
+                await hiddenWin.loadURL(apiUrl);
+
+                // Extract JSON from the page body
+                const bodyText = await hiddenWin.webContents.executeJavaScript('document.body.innerText');
+                hiddenWin.close();
+
+                console.log('Kick: Raw body (first 1000 chars):', bodyText?.substring(0, 1000));
+
+                if (bodyText) {
+                    const data = JSON.parse(bodyText);
+                    console.log('Kick: Top-level keys:', Object.keys(data));
+                    if (data.chatroom) console.log('Kick: chatroom keys:', Object.keys(data.chatroom));
+                    console.log('Kick: chatroom?.id =', data?.chatroom?.id);
+                    console.log('Kick: id =', data?.id);
+                    console.log('Kick: user_id =', data?.user_id);
+                    console.log('Kick: user?.id =', data?.user?.id);
+                    console.log('Kick: slug =', data?.slug);
+                    return data;
+                }
+                return null;
             } catch (error) {
                 console.error('Kick Channel Fetch Error:', error);
-                // Return simplified object if fails, or rethrow
                 return null;
             }
         });
 
-        // Kick Viewers (using v1 API which often works better for stats)
-        ipcMain.handle('get-kick-viewers', async (event, slug) => {
+        // Kick Viewers
+        ipcMain.handle('get-kick-viewers', async (_event, slug: string, token?: string) => {
             try {
+                if (token) {
+                    const response = await fetch(`https://api.kick.com/public/v1/channels?slug=${encodeURIComponent(slug)}`, {
+                        headers: {
+                            'Accept': 'application/json',
+                            'Authorization': `Bearer ${token}`,
+                        }
+                    });
+                    if (response.ok) {
+                        const data = await response.json();
+                        const channelData = Array.isArray(data?.data) ? data.data[0] : data?.data;
+                        return channelData?.stream?.viewer_count || channelData?.viewer_count || 0;
+                    }
+                }
+                // Fallback
                 const response = await fetch(`https://kick.com/api/v1/channels/${slug}`, {
                     headers: { 'Accept': 'application/json' }
                 });
@@ -191,6 +239,227 @@ if (!requestSingleInstanceLock) {
                 return data?.livestream?.viewer_count || 0;
             } catch (error) {
                 return 0;
+            }
+        });
+
+        // Twitch OAuth Login
+        ipcMain.handle('login-twitch', async () => {
+            return new Promise((resolve, reject) => {
+                const port = 8080;
+                let server: http.Server;
+
+                try {
+                    server = http.createServer((req, res) => {
+                        const reqUrl = new URL(req.url || '', `http://localhost:${port}`);
+
+                        if (reqUrl.pathname === '/callback') {
+                            res.writeHead(200, { 'Content-Type': 'text/html' });
+                            res.end(`
+                                <html><body>
+                                    <h2 style="font-family: sans-serif;">Logging in to BumpChat...</h2>
+                                    <script>
+                                        const hash = window.location.hash.substring(1);
+                                        const query = window.location.search.substring(1);
+                                        // Send both hash and query, as different providers use different methods
+                                        fetch('/token', { method: 'POST', body: hash || query }).then(() => {
+                                            document.body.innerHTML = '<h2 style="font-family: sans-serif; color: green;">Login successful! You can close this window.</h2>';
+                                            window.close();
+                                        }).catch(() => {
+                                            document.body.innerHTML = '<h2 style="font-family: sans-serif; color: red;">Login failed. Return to app.</h2>';
+                                        });
+                                    </script>
+                                </body></html>
+                            `);
+                        } else if (reqUrl.pathname === '/token' && req.method === 'POST') {
+                            let body = '';
+                            req.on('data', chunk => { body += chunk.toString(); });
+                            req.on('end', () => {
+                                const params = new URLSearchParams(body);
+                                const accessToken = params.get('access_token');
+                                const rawToken = body; // Backup if not formatted as expected
+
+                                res.writeHead(200);
+                                res.end('OK');
+
+                                server.close();
+                                if (accessToken) {
+                                    resolve({ success: true, token: accessToken });
+                                } else if (rawToken && rawToken.includes('access_token')) {
+                                    resolve({ success: true, token: rawToken, raw: true });
+                                } else {
+                                    resolve({ success: false, error: 'No access token found in redirect' });
+                                }
+                            });
+                        } else {
+                            res.writeHead(404);
+                            res.end();
+                        }
+                    });
+
+                    server.listen(port, () => {
+                        const clientId = 'fxsevpfcyqohtjqruissg3776uf5ng';
+                        const authUrl = `https://id.twitch.tv/oauth2/authorize?client_id=${clientId}&redirect_uri=http://localhost:${port}/callback&response_type=code&scope=chat:read chat:edit`;
+                        shell.openExternal(authUrl);
+                    });
+
+                    server.on('error', (err) => {
+                        reject(err);
+                    });
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        });
+
+        // Broadcast Message to OBS Widgets
+        ipcMain.on('broadcast-widget-message', (_event, message) => {
+            if (widgetBroadcaster) {
+                widgetBroadcaster.broadcastMessage(message);
+            }
+        });
+
+        // Broadcast Viewer Counts to OBS Widgets
+        ipcMain.on('broadcast-viewer-count', (_event, counts) => {
+            if (widgetBroadcaster) {
+                widgetBroadcaster.broadcastViewerCount(counts);
+            }
+        });
+
+        // Kick OAuth Login (OAuth 2.1 with PKCE)
+        ipcMain.handle('login-kick', async () => {
+            return new Promise(async (resolve, reject) => {
+                const port = 8080;
+                let server: http.Server;
+                const clientId = '01KGB3Z5C9EKE0M586NS3M8TRN';
+
+                // Generate PKCE code_verifier and code_challenge
+                const crypto = await import('crypto');
+                const codeVerifier = crypto.randomBytes(48).toString('base64url');
+                const codeChallenge = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+
+                try {
+                    server = http.createServer(async (req, res) => {
+                        const reqUrl = new URL(req.url || '', `http://localhost:${port}`);
+
+                        if (reqUrl.pathname === '/callback') {
+                            const code = reqUrl.searchParams.get('code');
+
+                            if (!code) {
+                                const error = reqUrl.searchParams.get('error') || 'No authorization code received';
+                                res.writeHead(200, { 'Content-Type': 'text/html' });
+                                res.end(`<html><body><h2 style="font-family: sans-serif; color: red;">Login failed: ${error}</h2></body></html>`);
+                                server.close();
+                                resolve({ success: false, error });
+                                return;
+                            }
+
+                            // Exchange authorization code for access token
+                            try {
+                                const clientSecret = '946c1ea99b27cf99798bd4075fdfdd2f53c2364750b1cead522ed0523a341b92';
+                                const tokenResponse = await fetch('https://id.kick.com/oauth/token', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/x-www-form-urlencoded',
+                                        'Accept': 'application/json',
+                                    },
+                                    body: new URLSearchParams({
+                                        grant_type: 'authorization_code',
+                                        client_id: clientId,
+                                        client_secret: clientSecret,
+                                        code: code,
+                                        redirect_uri: `http://localhost:${port}/callback`,
+                                        code_verifier: codeVerifier,
+                                    }).toString(),
+                                });
+
+                                const responseText = await tokenResponse.text();
+                                console.log('Kick token response status:', tokenResponse.status);
+                                console.log('Kick token response body:', responseText);
+
+                                let tokenData: any;
+                                try {
+                                    tokenData = JSON.parse(responseText);
+                                } catch {
+                                    console.error('Kick token response was not JSON:', responseText);
+                                    res.writeHead(200, { 'Content-Type': 'text/html' });
+                                    res.end(`<html><body><h2 style="font-family: sans-serif; color: red;">Login failed: Kick returned an unexpected response (HTTP ${tokenResponse.status})</h2></body></html>`);
+                                    server.close();
+                                    resolve({ success: false, error: `Unexpected response (HTTP ${tokenResponse.status})` });
+                                    return;
+                                }
+
+                                if (tokenData.access_token) {
+                                    res.writeHead(200, { 'Content-Type': 'text/html' });
+                                    res.end('<html><body><h2 style="font-family: sans-serif; color: #53FC18;">Login successful! You can close this window.</h2><script>setTimeout(()=>window.close(),1500)</script></body></html>');
+                                    server.close();
+                                    resolve({ success: true, token: tokenData.access_token });
+                                } else {
+                                    const errMsg = tokenData.error_description || tokenData.error || 'Token exchange failed';
+                                    console.error('Kick token exchange error:', tokenData);
+                                    res.writeHead(200, { 'Content-Type': 'text/html' });
+                                    res.end(`<html><body><h2 style="font-family: sans-serif; color: red;">Login failed: ${errMsg}</h2></body></html>`);
+                                    server.close();
+                                    resolve({ success: false, error: errMsg });
+                                }
+                            } catch (tokenErr: any) {
+                                console.error('Kick token exchange fetch error:', tokenErr);
+                                res.writeHead(200, { 'Content-Type': 'text/html' });
+                                res.end('<html><body><h2 style="font-family: sans-serif; color: red;">Login failed: could not reach Kick servers.</h2></body></html>');
+                                server.close();
+                                resolve({ success: false, error: tokenErr.message });
+                            }
+                        } else {
+                            res.writeHead(404);
+                            res.end();
+                        }
+                    });
+
+                    server.listen(port, () => {
+                        const scopes = encodeURIComponent('user:read chat:write channel:read');
+                        const redirectUri = encodeURIComponent(`http://localhost:${port}/callback`);
+                        const authUrl = `https://id.kick.com/oauth/authorize?response_type=code&client_id=${clientId}&redirect_uri=${redirectUri}&scope=${scopes}&code_challenge=${codeChallenge}&code_challenge_method=S256&state=bumchat`;
+                        console.log('Opening Kick auth URL:', authUrl);
+                        shell.openExternal(authUrl);
+                    });
+
+                    server.on('error', (err: any) => {
+                        reject(err);
+                    });
+                } catch (err) {
+                    reject(err);
+                }
+            });
+        });
+
+        // Kick: Send Chat Message (via official Kick public API)
+        ipcMain.handle('send-kick-message', async (_event, broadcasterId: string, message: string, token: string) => {
+            try {
+                const response = await fetch('https://api.kick.com/public/v1/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`,
+                        'Accept': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        broadcaster_user_id: parseInt(broadcasterId, 10),
+                        content: message,
+                        type: 'user',
+                    }),
+                });
+
+                const responseText = await response.text();
+                console.log('Kick send response:', response.status, responseText);
+
+                if (!response.ok) {
+                    console.error('Kick send message error:', response.status, responseText);
+                    return { success: false, error: `HTTP ${response.status}: ${responseText}` };
+                }
+
+                return { success: true };
+            } catch (error: any) {
+                console.error('Kick send message fetch error:', error);
+                return { success: false, error: error.message };
             }
         });
     });

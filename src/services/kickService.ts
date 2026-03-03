@@ -3,11 +3,6 @@ import { useConnectionStore } from '../store/useConnectionStore';
 
 const generateId = () => Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
 
-// Note: kick-live-connector is a Node.js library that uses WebSockets.
-// In an Electron renderer process with nodeIntegration: false, we might need to use it via preload/IPC.
-// For now, let's try a direct import - if it fails, we'll need to refactor to use IPC.
-// Alternatively, we can use a browser-compatible approach with raw WebSocket if the library doesn't work.
-
 interface KickChatMessage {
     id: string;
     chatroom_id: number;
@@ -28,26 +23,39 @@ interface KickChatMessage {
 class KickService {
     private ws: WebSocket | null = null;
     private chatroomId: string = '';
+    private broadcasterId: string = '';
     private viewCountInterval: NodeJS.Timeout | null = null;
 
-    async connect(username: string) {
-        // Use Electron IPC to bypass CORS and get chatroom ID
+    async connect(username: string, token?: string) {
         try {
-            // Try fetching via main process
-            const data = await window.electronAPI.getKickChannel(username);
-            let chatroomId = data?.chatroom?.id?.toString();
+            // Fetch channel data via main process (bypasses CORS)
+            const data = await window.electronAPI.getKickChannel(username, token);
+            console.log('Kick: Channel data received:', JSON.stringify(data)?.substring(0, 500));
+
+            // Try multiple paths for chatroom ID (official API vs old API have different shapes)
+            let chatroomId = data?.chatroom?.id?.toString()
+                || data?.chatroom_id?.toString()
+                || '';
+            // Try multiple paths for broadcaster/user ID
+            const broadcasterId = data?.broadcaster_user_id?.toString()
+                || data?.user_id?.toString()
+                || data?.user?.id?.toString()
+                || data?.id?.toString()
+                || '';
 
             if (!chatroomId) {
-                console.log('Kick: Could not get chatroom ID, falling back to username');
-                chatroomId = username;
+                console.log('Kick: Could not get chatroom ID from API response');
+                // Can't subscribe to Pusher without a numeric chatroom ID
+                return;
             }
 
             this.chatroomId = chatroomId;
-            console.log('Kick: Connecting to', username, 'chatroom', chatroomId);
+            this.broadcasterId = broadcasterId;
+            console.log('Kick: Connecting to', username, 'chatroom', chatroomId, 'broadcaster', broadcasterId);
 
-            // Connect to Pusher WebSocket
-            const pusherKey = 'eb1d5f283081a78b932c';
-            const wsUrl = `wss://ws-us2.pusher.com/app/${pusherKey}?protocol=7&client=js&version=7.4.0&flash=false`;
+            // Connect to Pusher WebSocket (key from kick-live-connector)
+            const pusherKey = '32cbd69e4b950bf97679';
+            const wsUrl = `wss://ws-us2.pusher.com/app/${pusherKey}?protocol=7&client=js&version=8.4.0-rc2&flash=false`;
 
             this.ws = new WebSocket(wsUrl);
 
@@ -69,7 +77,14 @@ class KickService {
                 try {
                     const data = JSON.parse(event.data);
 
-                    if (data.event === 'App\\Events\\ChatMessageEvent') {
+                    // Debug: log all incoming events
+                    if (data.event && !data.event.startsWith('pusher:')) {
+                        console.log('Kick WS event:', data.event);
+                    }
+
+                    // Listen for both possible event names
+                    if (data.event === 'App\\Events\\ChatMessageEvent' ||
+                        data.event === 'App\\Events\\ChatMessageSentEvent') {
                         const messageData: KickChatMessage = JSON.parse(data.data);
 
                         const chatMsg: ChatMessage = {
@@ -87,7 +102,7 @@ class KickService {
                         useChatStore.getState().addMessage(chatMsg);
                     }
                 } catch (e) {
-                    // Ignore parse errors
+                    // Ignore parse errors for non-JSON pusher frames
                 }
             };
 
@@ -108,7 +123,6 @@ class KickService {
         try {
             const count = await window.electronAPI.getKickViewers(slug);
             if (count !== undefined) {
-                // We need to import useViewCountStore (ignoring circular dep warning as we use it inside function)
                 const { useViewCountStore } = await import('../store/useViewCountStore');
                 useViewCountStore.getState().setKickViewCount(slug, count);
             }
@@ -131,15 +145,38 @@ class KickService {
             clearInterval(this.viewCountInterval);
             this.viewCountInterval = null;
         }
-        if (this.viewCountInterval) {
-            clearInterval(this.viewCountInterval);
-            this.viewCountInterval = null;
-        }
         this.chatroomId = '';
+        this.broadcasterId = '';
         useConnectionStore.getState().setKickConnected(false);
         console.log('Kick: Disconnected');
+    }
+
+    getChatroomId(): string {
+        return this.chatroomId;
+    }
+
+    getBroadcasterId(): string {
+        return this.broadcasterId;
+    }
+
+    async sendMessage(message: string, token: string): Promise<boolean> {
+        const id = this.broadcasterId || this.chatroomId;
+        if (!id) {
+            console.error('Kick: Cannot send message, not connected to a channel');
+            return false;
+        }
+        try {
+            const result = await window.electronAPI.sendKickMessage(id, message, token);
+            if (!result.success) {
+                console.error('Kick: Failed to send message:', result.error);
+                return false;
+            }
+            return true;
+        } catch (e) {
+            console.error('Kick: Error sending message:', e);
+            return false;
+        }
     }
 }
 
 export const kickService = new KickService();
-

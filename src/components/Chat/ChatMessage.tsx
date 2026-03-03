@@ -1,6 +1,6 @@
 import { ChatMessage as ChatMessageType } from '../../store/useChatStore';
 import { cn } from '../../lib/utils';
-import { Twitch, Youtube, Play } from 'lucide-react';
+import { Twitch, Play } from 'lucide-react';
 import { useMemo } from 'react';
 
 interface ChatMessageProps {
@@ -64,7 +64,6 @@ export function ChatMessage({ message }: ChatMessageProps) {
         <div className={cn(
             "flex items-start gap-2 p-1 hover:bg-white/5 group text-[13px] leading-5 font-medium",
             message.platform === 'twitch' ? "border-l-2 border-transparent hover:border-[#6441a5]" : "",
-            message.platform === 'youtube' ? "border-l-2 border-transparent hover:border-[#FF0000]" : "",
             message.platform === 'kick' ? "border-l-2 border-transparent hover:border-[#53FC18]" : ""
         )}>
             {/* Time */}
@@ -73,9 +72,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
             </span>
 
             {/* Badges / Platform Icon */}
-            <span className={cn("shrink-0", message.platform === 'twitch' ? "text-[#6441a5]" : message.platform === 'youtube' ? "text-[#FF0000]" : message.platform === 'kick' ? "text-[#53FC18]" : "text-gray-400")}>
+            <span className={cn("shrink-0", message.platform === 'twitch' ? "text-[#6441a5]" : message.platform === 'kick' ? "text-[#53FC18]" : "text-gray-400")}>
                 {message.platform === 'twitch' && <Twitch size={14} />}
-                {message.platform === 'youtube' && <Youtube size={14} />}
                 {message.platform === 'kick' && <Play size={14} />}
             </span>
 
