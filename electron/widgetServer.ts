@@ -23,8 +23,17 @@ export function startWidgetServer() {
 
     expressApp.use('/widgets', express.static(widgetsDir));
 
+    let onSendMessageCallback: ((data: { message: string; platform: string }) => void) | null = null;
+
     io.on('connection', (socket) => {
         console.log('OBS Widget connected:', socket.id);
+
+        socket.on('send-message', (data: { message: string; platform: string }) => {
+            console.log('Dock send-message:', data.platform, data.message);
+            if (onSendMessageCallback) {
+                onSendMessageCallback(data);
+            }
+        });
 
         socket.on('disconnect', () => {
             console.log('OBS Widget disconnected:', socket.id);
@@ -42,6 +51,9 @@ export function startWidgetServer() {
         },
         broadcastViewerCount: (counts: any) => {
             io.emit('viewer-count', counts);
+        },
+        onSendMessage: (callback: (data: { message: string; platform: string }) => void) => {
+            onSendMessageCallback = callback;
         }
     };
 }

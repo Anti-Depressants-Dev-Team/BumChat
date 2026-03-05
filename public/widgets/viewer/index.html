@@ -80,6 +80,7 @@
         const urlParams = new URLSearchParams(window.location.search);
         const fontSize = urlParams.get('fontSize') || '16px';
         const transparent = urlParams.get('transparent') === 'true';
+        const showTotal = urlParams.get('showTotal') !== 'false'; // default true
 
         container.style.fontSize = fontSize;
         if (transparent) {
@@ -93,10 +94,79 @@
         const twitchIcon = `<svg class="icon twitch" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2H3v16h5v4l4-4h5l4-4V2zm-10 9V7m5 4V7"/></svg>`;
         const kickIcon = `<svg class="icon kick" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>`;
 
+        // Animated counter state
+        let displayTwitch = 0;
+        let displayKick = 0;
+        let targetTwitch = 0;
+        let targetKick = 0;
+        let animFrame = null;
+
+        function animateCounts() {
+            let changed = false;
+
+            if (displayTwitch !== targetTwitch) {
+                const diff = targetTwitch - displayTwitch;
+                const step = Math.sign(diff) * Math.max(1, Math.abs(Math.ceil(diff * 0.15)));
+                displayTwitch += step;
+                if (Math.abs(displayTwitch - targetTwitch) <= 1) displayTwitch = targetTwitch;
+                changed = true;
+            }
+
+            if (displayKick !== targetKick) {
+                const diff = targetKick - displayKick;
+                const step = Math.sign(diff) * Math.max(1, Math.abs(Math.ceil(diff * 0.15)));
+                displayKick += step;
+                if (Math.abs(displayKick - targetKick) <= 1) displayKick = targetKick;
+                changed = true;
+            }
+
+            if (changed) {
+                renderCounts();
+                animFrame = requestAnimationFrame(animateCounts);
+            } else {
+                animFrame = null;
+            }
+        }
+
         function formatCount(count) {
             if (count >= 1000000) return (count / 1000000).toFixed(1) + 'M';
             if (count >= 1000) return (count / 1000).toFixed(1) + 'K';
             return count.toString();
+        }
+
+        function renderCounts() {
+            if (displayTwitch === 0 && displayKick === 0) {
+                container.style.display = 'none';
+                return;
+            }
+
+            container.style.display = 'flex';
+            let html = `<span style="color: #6B7280; margin-right: 4px;">${eyeIcon}</span>`;
+
+            if (showTotal && displayTwitch > 0 && displayKick > 0) {
+                html += `<span class="count" style="margin-right: 8px;">${formatCount(displayTwitch + displayKick)}</span>`;
+                html += `<span style="color:#333;margin-right:8px;">|</span>`;
+            }
+
+            if (displayTwitch > 0) {
+                html += `
+                    <div class="platform-count">
+                        ${twitchIcon}
+                        <span class="count">${formatCount(displayTwitch)}</span>
+                    </div>
+                `;
+            }
+
+            if (displayKick > 0) {
+                html += `
+                    <div class="platform-count">
+                        ${kickIcon}
+                        <span class="count">${formatCount(displayKick)}</span>
+                    </div>
+                `;
+            }
+
+            container.innerHTML = html;
         }
 
         socket.on('connect', () => {
@@ -106,43 +176,19 @@
         socket.on('viewer-count', (data) => {
             const { twitch, kick } = data;
 
-            let totalTwitch = 0;
-            let totalKick = 0;
+            targetTwitch = 0;
+            targetKick = 0;
 
             if (twitch) {
-                Object.values(twitch).forEach(c => totalTwitch += (c || 0));
+                Object.values(twitch).forEach(c => targetTwitch += (c || 0));
             }
             if (kick) {
-                Object.values(kick).forEach(c => totalKick += (c || 0));
+                Object.values(kick).forEach(c => targetKick += (c || 0));
             }
 
-            if (totalTwitch === 0 && totalKick === 0) {
-                container.style.display = 'none';
-                return;
+            if (!animFrame) {
+                animFrame = requestAnimationFrame(animateCounts);
             }
-
-            container.style.display = 'flex';
-            let html = `<span style="color: #6B7280; margin-right: 4px;">${eyeIcon}</span>`;
-
-            if (totalTwitch > 0) {
-                html += `
-                    <div class="platform-count">
-                        ${twitchIcon}
-                        <span class="count">${formatCount(totalTwitch)}</span>
-                    </div>
-                `;
-            }
-
-            if (totalKick > 0) {
-                html += `
-                    <div class="platform-count">
-                        ${kickIcon}
-                        <span class="count">${formatCount(totalKick)}</span>
-                    </div>
-                `;
-            }
-
-            container.innerHTML = html;
         });
 
     </script>

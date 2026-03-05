@@ -1,5 +1,5 @@
-import { Layout, MessageSquare, Twitch, Play, Unplug, Settings as SettingsIcon } from 'lucide-react'
-import { useState } from 'react'
+import { Layout, MessageSquare, Twitch, Play, Unplug, Settings as SettingsIcon, ExternalLink } from 'lucide-react'
+import { useState, useEffect } from 'react'
 import { ChatList } from './components/Chat/ChatList'
 import { ConnectionStatus } from './components/ConnectionStatus'
 import { ViewCounters } from './components/ViewCounters'
@@ -8,6 +8,7 @@ import { SettingsPanel } from './components/Settings/SettingsPanel'
 import { twitchService } from './services/twitchService'
 import { kickService } from './services/kickService'
 import { useSettingsStore } from './store/useSettingsStore'
+import { useConnectionStore } from './store/useConnectionStore'
 
 function App() {
     const setGlobalChannel = useSettingsStore((s) => s.setGlobalChannel);
@@ -19,6 +20,8 @@ function App() {
 
     const kickToken = useSettingsStore((s) => s.kickToken);
     const setKickToken = useSettingsStore((s) => s.setKickToken);
+    const kickUsername = useSettingsStore((s) => s.kickUsername);
+    const setKickUsername = useSettingsStore((s) => s.setKickUsername);
 
     // Persisted channel names (remembered across restarts)
     const twitchChannel = useSettingsStore((s) => s.twitchChannel);
@@ -46,11 +49,9 @@ function App() {
                     if (userData.data && userData.data.length > 0) {
                         const username = userData.data[0].login;
                         setTwitchUsername(username);
-
-                        if (twitchChannel) {
-                            setGlobalChannel(twitchChannel);
-                            twitchService.connect([twitchChannel], username, res.token);
-                        }
+                        setTwitchChannel(username);
+                        setGlobalChannel(username);
+                        twitchService.connect([username], username, res.token);
                     }
                 }
             }
@@ -59,14 +60,40 @@ function App() {
         }
     };
 
+    // Auto-connect to Kick: fetches user info then connects to their channel
+    const connectKick = async (token: string) => {
+        try {
+            // Step 1: Get the authenticated user's info (slug, user_id)
+            const userInfo = await window.electronAPI.getKickUser(token);
+            if (!userInfo) {
+                console.error('Kick: Could not fetch user info — token may be expired');
+                // Clear the expired token
+                setKickToken('');
+                setKickUsername('');
+                setKickChannel('');
+                return;
+            }
+
+            const displayName = userInfo.name || userInfo.slug || userInfo.username || '';
+            const userId = userInfo.user_id;
+            console.log('Kick: Authenticated as', displayName, 'user_id:', userId);
+            setKickUsername(displayName);
+
+            // Step 2: Connect to the user's own channel chat
+            // Pass userId so the channel can be found by broadcaster_user_id
+            // (display name may differ from channel slug)
+            kickService.connect(displayName, token, userId);
+        } catch (e) {
+            console.error('Kick: Auto-connect failed:', e);
+        }
+    };
+
     const handleKickAuth = async () => {
         try {
             const res = await window.electronAPI.loginKick();
             if (res.success && res.token) {
                 setKickToken(res.token);
-                if (kickChannel) {
-                    kickService.connect(kickChannel, res.token);
-                }
+                await connectKick(res.token);
             }
         } catch (e) {
             console.error('Kick Auth Failed:', e);
@@ -77,12 +104,58 @@ function App() {
         twitchService.disconnect();
         setTwitchToken('');
         setTwitchUsername('');
+        setTwitchChannel('');
     };
 
     const disconnectKick = () => {
         kickService.disconnect();
         setKickToken('');
+        setKickUsername('');
+        setKickChannel('');
     };
+
+    // Auto-connect on startup if we have stored credentials
+    useEffect(() => {
+        // Kick: always validate token first via connectKick (detects expired tokens)
+        if (kickToken) {
+            connectKick(kickToken);
+        }
+
+        // Twitch: auto-connect if we have stored credentials
+        if (twitchChannel) {
+            if (twitchToken && twitchUsername) {
+                setGlobalChannel(twitchChannel);
+                twitchService.connect([twitchChannel], twitchUsername, twitchToken);
+            } else {
+                // Connect anonymously (read-only)
+                twitchService.connect([twitchChannel]);
+            }
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []); // Only on mount
+
+    // Listen for messages from OBS dock widget
+    useEffect(() => {
+        window.electronAPI.onDockSendMessage(async (data) => {
+            const { message, platform } = data;
+            if (!message?.trim()) return;
+
+            try {
+                if (platform === 'twitch' || platform === 'all') {
+                    const { twitch: tw } = useConnectionStore.getState();
+                    if (tw.connected && tw.channels.length > 0) {
+                        tw.channels.forEach((ch: string) => twitchService.sendMessage(ch, message));
+                    }
+                }
+                if (platform === 'kick' || platform === 'all') {
+                    const kt = useSettingsStore.getState().kickToken;
+                    if (kt) kickService.sendMessage(message, kt);
+                }
+            } catch (e) {
+                console.error('Dock send-message error:', e);
+            }
+        });
+    }, []);
 
     return (
         <div className="flex h-screen w-full bg-background text-white overflow-hidden font-sans">
@@ -120,45 +193,13 @@ function App() {
                                 {/* Twitch */}
                                 <div className="flex items-center gap-1">
                                     <Twitch size={14} className="text-[#6441a5] shrink-0" />
-                                    <input
-                                        type="text"
-                                        value={twitchChannel}
-                                        onChange={(e) => setTwitchChannel(e.target.value)}
-                                        placeholder="Twitch channel"
-                                        className="bg-white/5 border border-[#6441a5]/30 rounded-md px-2 py-1 text-xs w-28 focus:outline-none focus:border-[#6441a5]/60 text-white placeholder:text-gray-500"
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && twitchChannel) {
-                                                setGlobalChannel(twitchChannel);
-                                                if (twitchToken && twitchUsername) {
-                                                    twitchService.connect([twitchChannel], twitchUsername, twitchToken);
-                                                } else {
-                                                    twitchService.connect([twitchChannel]);
-                                                }
-                                            }
-                                        }}
-                                    />
-                                    <button
-                                        onClick={() => {
-                                            if (!twitchChannel) return;
-                                            setGlobalChannel(twitchChannel);
-                                            if (twitchToken && twitchUsername) {
-                                                twitchService.connect([twitchChannel], twitchUsername, twitchToken);
-                                            } else {
-                                                twitchService.connect([twitchChannel]);
-                                            }
-                                        }}
-                                        className="bg-[#6441a5]/20 hover:bg-[#6441a5]/40 text-[#6441a5] rounded-md transition-colors px-2 py-1 text-xs font-semibold"
-                                    >
-                                        Watch
-                                    </button>
-                                    {/* Twitch Login */}
                                     {!twitchToken ? (
                                         <button onClick={handleTwitchAuth} className="flex items-center gap-1 bg-[#6441a5] hover:bg-[#7b5dfa] transition-colors px-2 py-1 rounded-md text-xs font-semibold shadow-sm">
                                             Login
                                         </button>
                                     ) : (
                                         <div className="flex items-center gap-1 bg-[#6441a5]/10 border border-[#6441a5]/30 px-2 py-1 rounded-md text-xs">
-                                            <span className="text-gray-300 font-medium">{twitchUsername || 'OK'}</span>
+                                            <span className="text-gray-300 font-medium">{twitchUsername || twitchChannel || 'Connected'}</span>
                                             <button onClick={disconnectTwitch} className="text-red-400 hover:text-red-300" title="Logout">
                                                 <Unplug size={11} />
                                             </button>
@@ -171,35 +212,13 @@ function App() {
                                 {/* Kick */}
                                 <div className="flex items-center gap-1">
                                     <Play size={14} className="text-[#53FC18] shrink-0" />
-                                    <input
-                                        type="text"
-                                        value={kickChannel}
-                                        onChange={(e) => setKickChannel(e.target.value)}
-                                        placeholder="Kick channel"
-                                        className="bg-white/5 border border-[#53FC18]/30 rounded-md px-2 py-1 text-xs w-28 focus:outline-none focus:border-[#53FC18]/60 text-white placeholder:text-gray-500"
-                                        onKeyDown={(e) => {
-                                            if (e.key === 'Enter' && kickChannel) {
-                                                kickService.connect(kickChannel, kickToken || undefined);
-                                            }
-                                        }}
-                                    />
-                                    <button
-                                        onClick={() => {
-                                            if (!kickChannel) return;
-                                            kickService.connect(kickChannel, kickToken || undefined);
-                                        }}
-                                        className="bg-[#53FC18]/20 hover:bg-[#53FC18]/40 text-[#53FC18] rounded-md transition-colors px-2 py-1 text-xs font-semibold"
-                                    >
-                                        Watch
-                                    </button>
-                                    {/* Kick Login */}
                                     {!kickToken ? (
                                         <button onClick={handleKickAuth} className="flex items-center gap-1 bg-[#53FC18] hover:bg-[#66ff33] text-black transition-colors px-2 py-1 rounded-md text-xs font-semibold shadow-sm">
                                             Login
                                         </button>
                                     ) : (
                                         <div className="flex items-center gap-1 bg-[#53FC18]/10 border border-[#53FC18]/30 px-2 py-1 rounded-md text-xs">
-                                            <span className="text-gray-300 font-medium">OK</span>
+                                            <span className="text-gray-300 font-medium">{kickUsername || kickChannel || 'Connected'}</span>
                                             <button onClick={disconnectKick} className="text-red-400 hover:text-red-300" title="Logout">
                                                 <Unplug size={11} />
                                             </button>
@@ -209,9 +228,17 @@ function App() {
                             </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-3 no-drag">
+                            <button
+                                onClick={() => window.electronAPI.popOutChat()}
+                                className="flex items-center gap-1.5 bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 hover:text-white px-2 py-1 rounded-md transition-colors text-xs font-medium"
+                                title="Pop out chat as separate window (for OBS Window Capture)"
+                            >
+                                <ExternalLink size={12} />
+                                Pop Out
+                            </button>
                             <ConnectionStatus />
-                            <span className="text-xs text-gray-500">v0.1.0</span>
+                            <span className="text-xs text-gray-500">v1.2.4</span>
                         </div>
                     </div>
                 </header>

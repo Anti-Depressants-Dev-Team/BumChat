@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useSettingsStore } from '../../store/useSettingsStore';
-import { Settings as SettingsIcon, Link2, MonitorPlay, Info, MessageSquare, Copy, Check } from 'lucide-react';
+import { Settings as SettingsIcon, Link2, MonitorPlay, Info, MessageSquare, Copy, Check, ExternalLink } from 'lucide-react';
 
 export function SettingsPanel() {
     const axelChatWidgetUrl = useSettingsStore((s) => s.axelChatWidgetUrl);
@@ -76,6 +76,23 @@ export function SettingsPanel() {
                             <p className="text-sm text-gray-400 mb-6">
                                 BumChat hosts these widgets locally. Copy the URL and add it as a "Browser Source" in OBS. Backgrounds are transparent by default.
                             </p>
+
+                            {/* Pop Out Chat Window */}
+                            <div className="bg-[#0a0a0a] border border-primary/20 rounded-xl p-5 mb-6">
+                                <h4 className="text-sm font-semibold text-white/90 mb-2 flex items-center gap-2">
+                                    <ExternalLink size={14} className="text-primary" /> Pop Out Chat Window
+                                </h4>
+                                <p className="text-xs text-gray-400 mb-4">
+                                    Opens a detachable, always-on-top mini-window showing live chat. Add it to OBS as a <strong>Window Capture</strong> source (select "BumChat Chat"). Includes built-in settings for font size and chroma-key backgrounds.
+                                </p>
+                                <button
+                                    onClick={() => window.electronAPI.popOutChat()}
+                                    className="bg-primary/20 hover:bg-primary/30 text-primary border border-primary/20 px-4 py-2 rounded-md font-semibold text-sm transition-colors flex items-center gap-2"
+                                >
+                                    <ExternalLink size={14} />
+                                    Open PiP Chat Window
+                                </button>
+                            </div>
 
                             {/* Chat Widget */}
                             <div className="bg-[#0a0a0a] border border-white/10 rounded-xl p-5 mb-6">

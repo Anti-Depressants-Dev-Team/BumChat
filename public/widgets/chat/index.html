@@ -215,82 +215,40 @@
                 .replace(/'/g, "&#039;");
         }
 
-        // Parse Twitch emotes (borrowed logic similar to the React component)
+        // Parse Twitch emotes safely using chunking
         function parseMessageWithEmotes(message, emotes) {
             if (!message) return '';
 
-            // Basic escape first
-            let html = escapeHtml(message);
-
-            if (emotes && Array.isArray(emotes) && emotes.length > 0) {
-                // Sort by position descending to avoid index shifting when replacing
-                const sortedEmotes = [...emotes].sort((a, b) => b.startPosition - a.startPosition);
-
-                // We need to operate on the original string indices, so doing string slicing
-                let resultChars = Array.from(message);
-
-                // Emote map to avoid double replacing the same emote if Twitch sends duplicates
-                const replacedStarts = new Set();
-
-                for (const format of sortedEmotes) {
-                    const start = format.startPosition;
-                    const end = format.endPosition + 1; // endPosition is inclusive in Twitch API
-
-                    if (replacedStarts.has(start)) continue; // Already replaced this position
-                    if (start < 0 || end > resultChars.length) continue; // Out of bounds
-
-                    replacedStarts.add(start);
-
-                    const emoteId = format.id;
-                    const emoteUrl = `https://static-cdn.jtvnw.net/emoticons/v2/${emoteId}/default/dark/1.0`;
-                    const imgTag = `<img class="emote" src="${emoteUrl}" />`;
-
-                    // Replace the chars (since we sorted desc, it doesn't affect earlier indices)
-                    resultChars.splice(start, end - start, imgTag);
-                }
-
-                // The result chars might contain HTML tags or raw text, we need to be careful
-                // Since we escaped HTML initially, but we built resultChars from RAW `message`, 
-                // we have a conflict.
-                // Simpler approach for the widget: just use the raw text if emotes exist and rely on 
-                // standard string replacement for simplicity.
-
-                return resultChars.join('');
-                // Note: The above simplistic Array.from mapping has security flaws with XSS if 
-                // the non-emote text has unescaped HTML. 
-                // A robust way is to build an AST or chunk array. For this MVP OBS widget, 
-                // let's do chunking correctly:
+            // No emotes — just escape and return
+            if (!emotes || !Array.isArray(emotes) || emotes.length === 0) {
+                return escapeHtml(message);
             }
 
-            // Proper chunking if emotes exist
-            if (emotes && Array.isArray(emotes) && emotes.length > 0) {
-                let chunks = [];
-                let currentIndex = 0;
+            // Sort emotes by position ascending
+            const sorted = [...emotes].sort((a, b) => a.startPosition - b.startPosition);
+            const chunks = [];
+            let currentIndex = 0;
 
-                const sorted = [...emotes].sort((a, b) => a.startPosition - b.startPosition);
-
-                for (const format of sorted) {
-                    if (format.startPosition >= currentIndex) {
-                        // Add text before emote
-                        chunks.push(escapeHtml(message.substring(currentIndex, format.startPosition)));
-
-                        // Add emote
-                        const emoteUrl = `https://static-cdn.jtvnw.net/emoticons/v2/${format.id}/default/dark/1.0`;
-                        chunks.push(`<img class="emote" src="${emoteUrl}" />`);
-
-                        currentIndex = format.endPosition + 1;
+            for (const em of sorted) {
+                if (em.startPosition >= currentIndex) {
+                    // Text before emote (escaped)
+                    if (em.startPosition > currentIndex) {
+                        chunks.push(escapeHtml(message.substring(currentIndex, em.startPosition)));
                     }
+                    // Emote image
+                    const emoteUrl = `https://static-cdn.jtvnw.net/emoticons/v2/${em.id}/default/dark/1.0`;
+                    const alt = escapeHtml(message.substring(em.startPosition, em.endPosition + 1));
+                    chunks.push(`<img class="emote" src="${emoteUrl}" alt="${alt}" />`);
+                    currentIndex = em.endPosition + 1;
                 }
-
-                // Add remaining text
-                if (currentIndex < message.length) {
-                    chunks.push(escapeHtml(message.substring(currentIndex)));
-                }
-
-                return chunks.join('');
             }
 
-            return html;
+            // Remaining text after last emote
+            if (currentIndex < message.length) {
+                chunks.push(escapeHtml(message.substring(currentIndex)));
+            }
+
+            return chunks.join('');
         }
     </script>
 </body>

@@ -10,9 +10,10 @@ import { startWidgetServer } from './widgetServer';
 // }
 
 let mainWindow: BrowserWindow | null = null;
+let pipWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let isQuitting = false;
-let widgetBroadcaster: { broadcastMessage: (message: any) => void; broadcastViewerCount: (counts: any) => void } | null = null;
+let widgetBroadcaster: { broadcastMessage: (message: any) => void; broadcastViewerCount: (counts: any) => void; onSendMessage: (callback: (data: { message: string; platform: string }) => void) => void } | null = null;
 
 // Detect dev mode using explicit flag
 const isDev = process.argv.includes('--dev');
@@ -160,6 +161,13 @@ if (!requestSingleInstanceLock) {
         // Start Local OBS Widget Server
         try {
             widgetBroadcaster = startWidgetServer();
+
+            // Relay messages from OBS dock widgets to the main renderer window
+            widgetBroadcaster.onSendMessage((data) => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send('dock-send-message', data);
+                }
+            });
         } catch (e) {
             console.error('Failed to start widget server on port 8356', e);
         }
@@ -176,42 +184,166 @@ if (!requestSingleInstanceLock) {
 
         // IPC Handlers for API requests (Bypassing CORS)
 
-        // Kick Channel Info (using hidden BrowserWindow to bypass Cloudflare)
-        ipcMain.handle('get-kick-channel', async (_event, slug: string, _token?: string) => {
+        // Kick: Get authenticated user info (for auto-connect)
+        ipcMain.handle('get-kick-user', async (_event, token: string) => {
             try {
-                console.log('Kick: Fetching channel data for', slug, 'via hidden browser...');
-                const hiddenWin = new BrowserWindow({
-                    show: false,
-                    width: 800,
-                    height: 600,
-                    webPreferences: { nodeIntegration: false, contextIsolation: true },
+                console.log('Kick: Fetching authenticated user info...');
+                const response = await fetch('https://api.kick.com/public/v1/users', {
+                    headers: {
+                        'Accept': 'application/json',
+                        'Authorization': `Bearer ${token}`,
+                    },
                 });
-
-                const apiUrl = `https://kick.com/api/v2/channels/${encodeURIComponent(slug)}`;
-                await hiddenWin.loadURL(apiUrl);
-
-                // Extract JSON from the page body
-                const bodyText = await hiddenWin.webContents.executeJavaScript('document.body.innerText');
-                hiddenWin.close();
-
-                console.log('Kick: Raw body (first 1000 chars):', bodyText?.substring(0, 1000));
-
-                if (bodyText) {
-                    const data = JSON.parse(bodyText);
-                    console.log('Kick: Top-level keys:', Object.keys(data));
-                    if (data.chatroom) console.log('Kick: chatroom keys:', Object.keys(data.chatroom));
-                    console.log('Kick: chatroom?.id =', data?.chatroom?.id);
-                    console.log('Kick: id =', data?.id);
-                    console.log('Kick: user_id =', data?.user_id);
-                    console.log('Kick: user?.id =', data?.user?.id);
-                    console.log('Kick: slug =', data?.slug);
-                    return data;
+                if (response.ok) {
+                    const json = await response.json();
+                    const userData = Array.isArray(json?.data) ? json.data[0] : json?.data;
+                    console.log('Kick: User info:', JSON.stringify(userData)?.substring(0, 500));
+                    return userData || null;
+                } else {
+                    console.error('Kick: User info fetch returned status', response.status);
+                    return null;
                 }
-                return null;
             } catch (error) {
-                console.error('Kick Channel Fetch Error:', error);
+                console.error('Kick: User info fetch error:', error);
                 return null;
             }
+        });
+
+        // Helper: Fetches the v1 API through a hidden BrowserWindow to bypass Cloudflare
+        async function fetchKickV1ChannelReady(slug: string): Promise<any> {
+            return new Promise((resolve) => {
+                const win = new BrowserWindow({
+                    show: false,
+                    webPreferences: { offscreen: true }
+                });
+
+                win.webContents.on('did-finish-load', async () => {
+                    try {
+                        const text = await win.webContents.executeJavaScript('document.body.innerText');
+                        const json = JSON.parse(text);
+                        resolve(json);
+                    } catch (e) {
+                        resolve(null);
+                    } finally {
+                        if (!win.isDestroyed()) win.destroy();
+                    }
+                });
+
+                // Failsafe timeout
+                setTimeout(() => {
+                    if (!win.isDestroyed()) {
+                        win.destroy();
+                        resolve(null);
+                    }
+                }, 8000);
+
+                win.loadURL(`https://kick.com/api/v1/channels/${slug}`);
+            });
+        }
+
+        // Kick: Get channel info (official API + Cloudflare bypass fallback)
+        ipcMain.handle('get-kick-channel', async (_event, slugOrId: string, token: string, userId?: number) => {
+            // Helper to extract channel data from API response
+            const extractChannel = (json: any) => {
+                const channelData = Array.isArray(json?.data) ? json.data[0] : json?.data;
+                if (channelData && Object.keys(channelData).length > 0) {
+                    console.log('Kick: Official API returned channel data, keys:', Object.keys(channelData));
+                    console.log('Kick: broadcaster_user_id =', channelData.broadcaster_user_id);
+                    console.log('Kick: chatroom_id =', channelData.chatroom_id);
+                    console.log('Kick: slug =', channelData.slug);
+                    return channelData;
+                }
+                return null;
+            };
+
+            const headers = {
+                'Accept': 'application/json',
+                'Authorization': `Bearer ${token}`,
+            };
+
+            // Strategy 1: By broadcaster_user_id (most reliable — user_id comes from /users endpoint)
+            if (userId) {
+                try {
+                    console.log('Kick: Fetching channel by broadcaster_user_id:', userId);
+                    const response = await fetch(`https://api.kick.com/public/v1/channels?broadcaster_user_id=${userId}`, { headers });
+                    if (response.ok) {
+                        const json = await response.json();
+                        let channel = extractChannel(json);
+
+                        if (channel) {
+                            // The broadcaster_user_id endpoint often omits chatroom_id.
+                            // If we have the slug now, fetch again by slug to get the full data including chatroom_id.
+                            if (!channel.chatroom_id && channel.slug) {
+                                console.log('Kick: chatroom_id missing from user_id response, attempting Cloudflare bypass via hidden BrowserWindow for slug:', channel.slug);
+                                const v1Data = await fetchKickV1ChannelReady(channel.slug);
+                                if (v1Data && v1Data.chatroom && v1Data.chatroom.id) {
+                                    console.log('Kick: Successfully bypassed Cloudflare and obtained chatroom_id:', v1Data.chatroom.id);
+                                    channel.chatroom_id = v1Data.chatroom.id;
+                                    return channel;
+                                }
+
+                                // Fallback: try official slug endpoint just in case
+                                console.log('Kick: V1 bypass failed, trying official slug endpoint as last resort');
+                                const slugResponse = await fetch(`https://api.kick.com/public/v1/channels?slug=${encodeURIComponent(channel.slug)}`, { headers });
+                                if (slugResponse.ok) {
+                                    const slugJson = await slugResponse.json();
+                                    const slugChannel = extractChannel(slugJson);
+                                    if (slugChannel && slugChannel.chatroom_id) {
+                                        channel = slugChannel;
+                                    }
+                                }
+                            }
+                            return channel;
+                        }
+                    } else {
+                        console.log('Kick: broadcaster_user_id lookup returned', response.status);
+                    }
+                } catch (e) {
+                    console.error('Kick: broadcaster_user_id lookup error:', e);
+                }
+            }
+
+            // Strategy 2: By slug (official API)
+            try {
+                console.log('Kick: Fetching channel by slug:', slugOrId);
+                const response = await fetch(`https://api.kick.com/public/v1/channels?slug=${encodeURIComponent(slugOrId)}`, { headers });
+                if (response.ok) {
+                    const json = await response.json();
+                    const channel = extractChannel(json);
+
+                    if (channel) {
+                        if (!channel.chatroom_id && channel.slug) {
+                            console.log('Kick: chatroom_id missing from official slug response, attempting Cloudflare bypass');
+                            const v1Data = await fetchKickV1ChannelReady(channel.slug);
+                            if (v1Data && v1Data.chatroom && v1Data.chatroom.id) {
+                                console.log('Kick: Successfully obtained chatroom_id:', v1Data.chatroom.id);
+                                channel.chatroom_id = v1Data.chatroom.id;
+                            }
+                        }
+                        return channel;
+                    }
+                } else {
+                    const text = await response.text();
+                    console.error('Kick: slug lookup returned', response.status, text?.substring(0, 200));
+                }
+            } catch (error) {
+                console.error('Kick: slug lookup error:', error);
+            }
+
+            // Strategy 3: Cloudflare bypass V1 API directly (if all official APIs fail)
+            console.log('Kick: Attempting V1 API directly via hidden BrowserWindow for', slugOrId);
+            const v1Fallback = await fetchKickV1ChannelReady(slugOrId);
+            if (v1Fallback && v1Fallback.chatroom && v1Fallback.user_id) {
+                return {
+                    broadcaster_user_id: v1Fallback.user_id,
+                    chatroom_id: v1Fallback.chatroom.id,
+                    slug: v1Fallback.slug,
+                    stream_title: v1Fallback.livestream?.session_title,
+                };
+            }
+
+            console.error('Kick: All channel fetch strategies failed for', slugOrId, 'userId:', userId);
+            return null;
         });
 
         // Kick Viewers
@@ -298,7 +430,8 @@ if (!requestSingleInstanceLock) {
 
                     server.listen(port, () => {
                         const clientId = 'fxsevpfcyqohtjqruissg3776uf5ng';
-                        const authUrl = `https://id.twitch.tv/oauth2/authorize?client_id=${clientId}&redirect_uri=http://localhost:${port}/callback&response_type=code&scope=chat:read chat:edit`;
+                        // response_type=token is needed for implicit grant (direct access_token in the #hash)
+                        const authUrl = `https://id.twitch.tv/oauth2/authorize?client_id=${clientId}&redirect_uri=http://localhost:${port}/callback&response_type=token&scope=chat:read chat:edit`;
                         shell.openExternal(authUrl);
                     });
 
@@ -309,6 +442,55 @@ if (!requestSingleInstanceLock) {
                     reject(err);
                 }
             });
+        });
+
+        // PiP Chat Window — detachable, frameless, always-on-top chat overlay
+        ipcMain.handle('pop-out-chat', async (_event, settings?: { fontSize?: string; timeout?: string; bg?: string }) => {
+            // Only one PiP window at a time
+            if (pipWindow && !pipWindow.isDestroyed()) {
+                pipWindow.focus();
+                return { success: true, alreadyOpen: true };
+            }
+
+            pipWindow = new BrowserWindow({
+                width: 420,
+                height: 600,
+                minWidth: 280,
+                minHeight: 200,
+                frame: false,
+                transparent: false,
+                alwaysOnTop: true,
+                skipTaskbar: false,
+                resizable: true,
+                title: 'BumChat Chat',
+                backgroundColor: '#0a0a0a',
+                webPreferences: {
+                    nodeIntegration: false,
+                    contextIsolation: true,
+                },
+            });
+
+            const params = new URLSearchParams();
+            if (settings?.fontSize) params.set('fontSize', settings.fontSize);
+            if (settings?.timeout) params.set('timeout', settings.timeout);
+            if (settings?.bg) params.set('bg', settings.bg);
+            const qs = params.toString() ? '?' + params.toString() : '';
+            pipWindow.loadURL(`http://127.0.0.1:8356/widgets/chat/pip.html${qs}`);
+            pipWindow.removeMenu();
+
+            pipWindow.on('closed', () => {
+                pipWindow = null;
+            });
+
+            return { success: true };
+        });
+
+        ipcMain.handle('close-pip-chat', async () => {
+            if (pipWindow && !pipWindow.isDestroyed()) {
+                pipWindow.close();
+                pipWindow = null;
+            }
+            return { success: true };
         });
 
         // Broadcast Message to OBS Widgets

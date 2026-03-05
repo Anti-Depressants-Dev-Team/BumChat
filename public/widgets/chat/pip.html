@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BumChat Chat</title>
+    <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+        body {
+            background: #0a0a0a;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            color: #e5e7eb;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            user-select: none;
+        }
+
+        /* Drag bar at top */
+        #drag-bar {
+            height: 28px;
+            background: #111;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 10px;
+            -webkit-app-region: drag;
+            flex-shrink: 0;
+        }
+
+        #drag-bar .title {
+            font-size: 11px;
+            font-weight: 600;
+            color: #666;
+            letter-spacing: 0.5px;
+        }
+
+        #drag-bar .controls {
+            display: flex;
+            gap: 0;
+            -webkit-app-region: no-drag;
+        }
+
+        #drag-bar .controls button {
+            width: 32px;
+            height: 28px;
+            border-radius: 0;
+            border: none;
+            cursor: pointer;
+            background: transparent;
+            color: #888;
+            font-size: 13px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.12s, color 0.12s;
+        }
+
+        #drag-bar .controls button:hover {
+            background: rgba(255, 255, 255, 0.08);
+            color: #ddd;
+        }
+
+        .btn-close:hover {
+            background: #e81123 !important;
+            color: #fff !important;
+        }
+
+        /* Chat container */
+        #chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 8px;
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            scrollbar-width: thin;
+            scrollbar-color: rgba(255, 255, 255, 0.1) transparent;
+        }
+
+        #chat-container::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        #chat-container::-webkit-scrollbar-track {
+            background: transparent;
+        }
+
+        #chat-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+        }
+
+        /* Messages */
+        .message {
+            padding: 3px 8px;
+            font-size: 13px;
+            line-height: 1.5;
+            border-radius: 4px;
+            animation: slideIn 0.25s ease-out forwards;
+            opacity: 0;
+            word-wrap: break-word;
+            transition: background 0.2s;
+        }
+
+        .message:hover {
+            background: rgba(255, 255, 255, 0.04);
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Platform badge */
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            margin-right: 4px;
+            vertical-align: text-bottom;
+            font-size: 9px;
+            font-weight: 700;
+            color: white;
+            flex-shrink: 0;
+        }
+
+        .badge.twitch {
+            background: #9146FF;
+        }
+
+        .badge.kick {
+            background: #53FC18;
+            color: #000;
+        }
+
+        .username {
+            font-weight: 700;
+            margin-right: 5px;
+            cursor: default;
+        }
+
+        .body {
+            color: #d1d5db;
+        }
+
+        .emote {
+            vertical-align: middle;
+            max-height: 22px;
+            display: inline-block;
+        }
+
+        /* Settings panel */
+        #settings-panel {
+            display: none;
+            position: absolute;
+            top: 28px;
+            right: 0;
+            left: 0;
+            background: #111;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            padding: 12px;
+            z-index: 10;
+            animation: slideDown 0.2s ease-out;
+        }
+
+        #settings-panel.open {
+            display: block;
+        }
+
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        #settings-panel label {
+            display: block;
+            font-size: 11px;
+            color: #888;
+            margin-bottom: 4px;
+        }
+
+        #settings-panel select,
+        #settings-panel input[type="color"] {
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            margin-bottom: 8px;
+            outline: none;
+            width: 100%;
+        }
+
+        .settings-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+        }
+
+        /* Connection status */
+        #status {
+            height: 24px;
+            background: #0d0d0d;
+            border-top: 1px solid rgba(255, 255, 255, 0.06);
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            font-size: 10px;
+            color: #555;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        #status .dot {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: #555;
+        }
+
+        #status .dot.connected {
+            background: #22c55e;
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Empty state */
+        .empty-state {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #333;
+            font-size: 12px;
+        }
+
+        @keyframes fadeOut {
+            to {
+                opacity: 0;
+                transform: translateY(-4px);
+            }
+        }
+
+        /* Chat input bar */
+        #chat-input-bar {
+            display: none;
+            padding: 6px 8px;
+            background: #111;
+            border-top: 1px solid rgba(255, 255, 255, 0.08);
+            flex-shrink: 0;
+        }
+
+        #chat-input-bar.open {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        #chat-input-bar select {
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #ccc;
+            padding: 4px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            outline: none;
+            flex-shrink: 0;
+        }
+
+        #chat-input-bar input[type="text"] {
+            flex: 1;
+            background: rgba(255, 255, 255, 0.06);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            color: #fff;
+            padding: 5px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            outline: none;
+            font-family: inherit;
+        }
+
+        #chat-input-bar input[type="text"]:focus {
+            border-color: rgba(145, 70, 255, 0.5);
+        }
+
+        #chat-input-bar .send-btn {
+            background: rgba(145, 70, 255, 0.3);
+            border: none;
+            color: #ccc;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            transition: background 0.15s;
+            flex-shrink: 0;
+        }
+
+        #chat-input-bar .send-btn:hover {
+            background: rgba(145, 70, 255, 0.5);
+            color: #fff;
+        }
+
+        #status .toggle-chat {
+            margin-left: auto;
+            cursor: pointer;
+            color: #666;
+            font-size: 12px;
+            transition: color 0.15s;
+        }
+
+        #status .toggle-chat:hover {
+            color: #aaa;
+        }
+
+        #status .toggle-chat.active {
+            color: #9146FF;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Drag bar -->
+    <div id="drag-bar">
+        <span class="title">BumChat</span>
+        <div class="controls">
+            <button class="btn-settings" title="Settings" onclick="toggleSettings()">⚙</button>
+            <button class="btn-minimize" title="Minimize" onclick="minimizeWindow()">—</button>
+            <button class="btn-close" title="Close" onclick="closeWindow()">✕</button>
+        </div>
+    </div>
+
+    <!-- Settings panel (hidden by default) -->
+    <div id="settings-panel">
+        <div class="settings-row">
+            <div>
+                <label>Font Size</label>
+                <select id="opt-fontsize" onchange="applySettings()">
+                    <option value="11">Small (11px)</option>
+                    <option value="13" selected>Medium (13px)</option>
+                    <option value="15">Large (15px)</option>
+                    <option value="18">Huge (18px)</option>
+                    <option value="24">XL (24px)</option>
+                </select>
+            </div>
+            <div>
+                <label>Background</label>
+                <select id="opt-bg" onchange="applySettings()">
+                    <option value="#0a0a0a">Black</option>
+                    <option value="#00b140">Green Screen</option>
+                    <option value="#0000ff">Blue Screen</option>
+                    <option value="#111827">Dark Blue</option>
+                    <option value="#1a1a2e">Dark Purple</option>
+                </select>
+            </div>
+        </div>
+        <div class="settings-row">
+            <div>
+                <label>Message Duration</label>
+                <select id="opt-timeout" onchange="applySettings()">
+                    <option value="0" selected>Never Disappear</option>
+                    <option value="5">5 seconds</option>
+                    <option value="10">10 seconds</option>
+                    <option value="15">15 seconds</option>
+                    <option value="30">30 seconds</option>
+                    <option value="60">60 seconds</option>
+                </select>
+            </div>
+            <div>
+                <label>Max Messages</label>
+                <select id="opt-max" onchange="applySettings()">
+                    <option value="30">30</option>
+                    <option value="50" selected>50</option>
+                    <option value="100">100</option>
+                    <option value="200">200</option>
+                </select>
+            </div>
+        </div>
+        <div class="settings-row">
+            <div>
+                <label>Platform Badges</label>
+                <select id="opt-platform" onchange="applySettings()">
+                    <option value="true" selected>Show</option>
+                    <option value="false">Hide</option>
+                </select>
+            </div>
+            <div></div>
+        </div>
+    </div>
+
+    <div id="chat-container">
+        <div class="empty-state">Waiting for messages...</div>
+    </div>
+
+    <div id="chat-input-bar">
+        <select id="input-platform">
+            <option value="all">All</option>
+            <option value="twitch">Twitch</option>
+            <option value="kick">Kick</option>
+        </select>
+        <input type="text" id="input-message" placeholder="Send a message..." autocomplete="off" />
+        <button onclick="sendChatMessage()">Send</button>
+    </div>
+
+    <div id="status">
+        <span class="dot" id="status-dot"></span>
+        <span id="status-text">Connecting...</span>
+        <span class="toggle-chat" id="toggle-chat-btn" onclick="toggleChatInput()" title="Toggle chat input">✎</span>
+    </div>
+
+    <script>
+        const socket = io('http://127.0.0.1:8356');
+        const chatContainer = document.getElementById('chat-container');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const settingsPanel = document.getElementById('settings-panel');
+
+        let messageCount = 0;
+        let maxMessages = 50;
+        let showPlatform = true;
+        let messageTimeout = 0;
+        let emptied = false;
+
+        // Read URL parameters (passed from main app Settings panel)
+        const urlParams = new URLSearchParams(window.location.search);
+
+        function initFromUrlParams() {
+            const fs = urlParams.get('fontSize');
+            if (fs) {
+                const val = parseInt(fs);
+                const sel = document.getElementById('opt-fontsize');
+                // Try to match an existing option, otherwise add one
+                let found = false;
+                for (const opt of sel.options) {
+                    if (parseInt(opt.value) === val) { opt.selected = true; found = true; break; }
+                }
+                if (!found) {
+                    const opt = document.createElement('option');
+                    opt.value = val;
+                    opt.text = val + 'px';
+                    opt.selected = true;
+                    sel.appendChild(opt);
+                }
+            }
+
+            const bg = urlParams.get('bg');
+            if (bg) {
+                const sel = document.getElementById('opt-bg');
+                for (const opt of sel.options) {
+                    if (opt.value === bg) { opt.selected = true; break; }
+                }
+            }
+
+            const timeout = urlParams.get('timeout');
+            if (timeout) {
+                const sel = document.getElementById('opt-timeout');
+                for (const opt of sel.options) {
+                    if (opt.value === timeout) { opt.selected = true; break; }
+                }
+            }
+
+            const max = urlParams.get('maxMessages');
+            if (max) {
+                const sel = document.getElementById('opt-max');
+                for (const opt of sel.options) {
+                    if (opt.value === max) { opt.selected = true; break; }
+                }
+            }
+
+            const platform = urlParams.get('showPlatform');
+            if (platform) {
+                const sel = document.getElementById('opt-platform');
+                for (const opt of sel.options) {
+                    if (opt.value === platform) { opt.selected = true; break; }
+                }
+            }
+        }
+
+        initFromUrlParams();
+
+        // Settings
+        function applySettings() {
+            const fontSize = document.getElementById('opt-fontsize').value;
+            const bg = document.getElementById('opt-bg').value;
+            maxMessages = parseInt(document.getElementById('opt-max').value);
+            showPlatform = document.getElementById('opt-platform').value === 'true';
+            messageTimeout = parseInt(document.getElementById('opt-timeout').value);
+
+            chatContainer.style.fontSize = fontSize + 'px';
+            document.body.style.background = bg;
+        }
+
+        // Apply on load
+        applySettings();
+
+        function toggleSettings() {
+            settingsPanel.classList.toggle('open');
+        }
+
+        function closeWindow() {
+            window.close();
+        }
+
+        function minimizeWindow() {
+            // PiP windows can't easily minimize through JS, but this is a no-op fallback
+        }
+
+        // Connection status
+        socket.on('connect', () => {
+            statusDot.classList.add('connected');
+            statusText.textContent = 'Connected';
+        });
+
+        socket.on('disconnect', () => {
+            statusDot.classList.remove('connected');
+            statusText.textContent = 'Disconnected';
+        });
+
+        // Chat messages
+        socket.on('chat-message', (data) => {
+            // Clear empty state on first message
+            if (!emptied) {
+                chatContainer.innerHTML = '';
+                emptied = true;
+            }
+
+            const el = document.createElement('div');
+            el.className = 'message';
+
+            let html = '';
+
+            // Platform badge
+            if (showPlatform) {
+                if (data.platform === 'twitch') {
+                    html += '<span class="badge twitch">T</span>';
+                } else if (data.platform === 'kick') {
+                    html += '<span class="badge kick">K</span>';
+                }
+            }
+
+            // Username
+            const color = data.color || (data.platform === 'twitch' ? '#bf94ff' : '#53FC18');
+            html += `<span class="username" style="color: ${escapeAttr(color)}">${escapeHtml(data.author)}</span>`;
+
+            // Message body with emotes
+            html += `<span class="body">${parseEmotes(data.body, data.emotes)}</span>`;
+
+            el.innerHTML = html;
+            chatContainer.appendChild(el);
+
+            // Auto-scroll
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+
+            // Trim old messages
+            messageCount++;
+            while (messageCount > maxMessages && chatContainer.firstChild) {
+                chatContainer.removeChild(chatContainer.firstChild);
+                messageCount--;
+            }
+
+            // Auto-hide message after timeout
+            if (messageTimeout > 0) {
+                setTimeout(() => {
+                    if (document.body.contains(el)) {
+                        el.style.animation = 'fadeOut 0.4s ease-out forwards';
+                        setTimeout(() => {
+                            if (document.body.contains(el)) {
+                                chatContainer.removeChild(el);
+                                messageCount--;
+                            }
+                        }, 400);
+                    }
+                }, messageTimeout * 1000);
+            }
+        });
+
+        function escapeHtml(str) {
+            return (str || '').toString()
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function escapeAttr(str) {
+            return (str || '').toString().replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+        }
+
+        function parseEmotes(message, emotes) {
+            if (!message) return '';
+            if (!emotes || !Array.isArray(emotes) || emotes.length === 0) {
+                return escapeHtml(message);
+            }
+
+            // Build chunks: text and emotes, sorted by position
+            const sorted = [...emotes].sort((a, b) => a.startPosition - b.startPosition);
+            const chunks = [];
+            let idx = 0;
+
+            for (const em of sorted) {
+                if (em.startPosition >= idx) {
+                    // Text before emote
+                    if (em.startPosition > idx) {
+                        chunks.push(escapeHtml(message.substring(idx, em.startPosition)));
+                    }
+                    // Emote image
+                    const url = `https://static-cdn.jtvnw.net/emoticons/v2/${em.id}/default/dark/1.0`;
+                    chunks.push(`<img class="emote" src="${url}" alt="${escapeAttr(message.substring(em.startPosition, em.endPosition + 1))}" />`);
+                    idx = em.endPosition + 1;
+                }
+            }
+
+            // Remaining text
+            if (idx < message.length) {
+                chunks.push(escapeHtml(message.substring(idx)));
+            }
+
+            return chunks.join('');
+        }
+
+        // ---- Chat Input ----
+        const chatInputBar = document.getElementById('chat-input-bar');
+        const chatInputField = document.getElementById('input-message');
+        const chatInputPlatform = document.getElementById('input-platform');
+        const toggleChatBtn = document.getElementById('toggle-chat-btn');
+
+        function toggleChatInput() {
+            chatInputBar.classList.toggle('open');
+            toggleChatBtn.classList.toggle('active');
+            if (chatInputBar.classList.contains('open')) {
+                chatInputField.focus();
+            }
+        }
+
+        function sendChatMessage() {
+            const msg = chatInputField.value.trim();
+            if (!msg) return;
+
+            const platform = chatInputPlatform.value;
+            socket.emit('send-message', { message: msg, platform: platform });
+            chatInputField.value = '';
+            chatInputField.focus();
+        }
+
+        chatInputField.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendChatMessage();
+            }
+        });
+
+        // Auto-open input if URL param says so
+        if (urlParams.get('showInput') === 'true') {
+            toggleChatInput();
+        }
+    </script>
+</body>
+
+</html>

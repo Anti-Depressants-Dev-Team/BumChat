@@ -15,6 +15,7 @@ interface Settings {
     kickChannels: string[];
     kickChannel: string;
     kickToken: string;
+    kickUsername: string;
 
     // Integrations
     axelChatWidgetUrl: string;
@@ -31,6 +32,7 @@ interface Settings {
     removeKickChannel: (channel: string) => void;
     setKickChannel: (channel: string) => void;
     setKickToken: (token: string) => void;
+    setKickUsername: (username: string) => void;
 
     setAxelChatWidgetUrl: (url: string) => void;
 }
@@ -47,6 +49,7 @@ export const useSettingsStore = create<Settings>()(
             kickChannels: [],
             kickChannel: '',
             kickToken: '',
+            kickUsername: '',
 
             axelChatWidgetUrl: '',
 
@@ -78,6 +81,7 @@ export const useSettingsStore = create<Settings>()(
                 })),
             setKickChannel: (channel) => set({ kickChannel: channel }),
             setKickToken: (token) => set({ kickToken: token }),
+            setKickUsername: (username) => set({ kickUsername: username }),
 
             setAxelChatWidgetUrl: (url) => set({ axelChatWidgetUrl: url }),
         }),
